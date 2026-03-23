@@ -62,9 +62,8 @@ def connect_chrome(playwright, port: int = 9222):
             f"  macOS:   uv run python scripts/launch_chrome.py --chrome-port {port}\n"
             f"  Linux:   google-chrome --remote-debugging-port={port}\n"
             f"  Windows: chrome.exe --remote-debugging-port={port}\n\n"
-            f"On macOS, prefer a dedicated --user-data-dir for Chrome remote debugging.\n"
-            f"If you need your normal Chrome profile, fully quit Chrome and use:\n"
-            f"  uv run python scripts/launch_chrome.py --chrome-port {port} --use-system-profile --profile-directory Default\n"
+            f"On modern Chrome, use a dedicated --user-data-dir for remote debugging.\n"
+            f"Chrome 136+ does not support --remote-debugging-port against the default Chrome profile.\n"
             f"Make sure you are already signed in at https://music.youtube.com in that launched session, then retry."
         )
 

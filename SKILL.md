@@ -1,7 +1,7 @@
 ---
 name: ytmusic
 description: Operate YouTube Music via natural language. Search songs, artists, albums, playlists, lyrics, charts, recommendations, and control playback. Browse personal library, manage playlists, rate tracks, and inspect account info. Use this skill whenever the user asks about YouTube Music, wants to play music, manage playlists, search by song or artist name, inspect lyrics, or control playback.
-version: 0.1.1
+version: 0.1.2
 metadata:
   openclaw:
     requires:
@@ -135,17 +135,16 @@ Playback only works through Chrome CDP. `open`, `play`, `pause`, `next`, `prev`,
 uv run python scripts/launch_chrome.py
 uv run python scripts/launch_chrome.py --chrome-port 9223
 uv run python scripts/launch_chrome.py --user-data-dir ~/.ytmusic-chrome-profile
-uv run python scripts/launch_chrome.py --use-system-profile --profile-directory Default
 ```
 
 On macOS, prefer `scripts/launch_chrome.py` over `open -a 'Google Chrome' --args ...`.
 The launcher starts Chrome with a dedicated `--user-data-dir`, which is more reliable for remote debugging on macOS.
+On modern Chrome, this is also required: Chrome 136+ no longer respects `--remote-debugging-port` for the default Chrome data directory.
 
 Important behavior:
 - The launched Chrome window uses its own profile directory
 - The user may need to sign in to `music.youtube.com` again inside that launched window
-- To reuse an existing Chrome profile instead, use `--use-system-profile` and optionally `--profile-directory`
-- Reusing the system profile only works reliably if Chrome is fully quit before relaunching with remote debugging
+- Reusing the normal Chrome profile is not supported for this CDP workflow on Chrome 136+
 - If `open <videoId>` loads the page but playback is still paused, autoplay was likely blocked and the user may need to click play once in that Chrome window
 - `status` is not an offline state reader; it also requires the Chrome debugging session to be running
 
@@ -166,7 +165,7 @@ uv run --with playwright python scripts/player.py --chrome-port 9222 status
 If playback commands fail, first verify:
 - Chrome is already running with `--remote-debugging-port=9222`
 - On macOS, Chrome was launched with a dedicated `--user-data-dir` such as `scripts/launch_chrome.py`
-- If reusing the system profile, Chrome was fully quit before `scripts/launch_chrome.py --use-system-profile ...`
+- Do not expect the normal Chrome profile to work with remote debugging on Chrome 136+
 - The user is signed in at `music.youtube.com`
 - The requested song page can actually play in that Chrome session
 

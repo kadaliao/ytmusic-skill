@@ -73,15 +73,13 @@ uv run python scripts/launch_chrome.py
 
 On macOS, prefer this helper over `open -a 'Google Chrome' --args ...`.
 It uses a dedicated `--user-data-dir`, which is more reliable for remote debugging. Because that is a separate Chrome profile, you may need to sign in again inside the launched window.
-If you want to reuse your normal Chrome profile instead, fully quit Chrome first and launch with `--use-system-profile`.
+On Chrome 136 and later, this dedicated profile is required because Chrome no longer allows `--remote-debugging-port` against the default Chrome data directory.
 
 Examples:
 
 ```bash
 uv run python scripts/launch_chrome.py --chrome-port 9223
 uv run python scripts/launch_chrome.py --user-data-dir ~/.ytmusic-chrome-profile
-uv run python scripts/launch_chrome.py --use-system-profile --profile-directory Default
-uv run python scripts/launch_chrome.py --use-system-profile --profile-directory 'Profile 1'
 uv run --with playwright python scripts/player.py open <videoId>
 uv run --with playwright python scripts/player.py status
 uv run --with playwright python scripts/player.py --chrome-port 9222 next
@@ -95,7 +93,7 @@ uv run --with playwright python scripts/player.py --chrome-port 9222 next
 - Playback depends on a real Chrome session with remote debugging enabled
 - If `open <videoId>` loads a track but does not start audio, autoplay was likely blocked and the user may need to click play once in the launched Chrome window
 - `status` also depends on the active CDP Chrome session; it does not work without the debugging port
-- Reusing your existing Chrome profile requires Chrome to be fully quit before relaunch; otherwise the debugging flags may be ignored
+- Reusing your existing normal Chrome profile is not supported on Chrome 136+
 
 ## ClawHub Notes
 

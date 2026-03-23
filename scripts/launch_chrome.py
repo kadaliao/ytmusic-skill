@@ -2,8 +2,8 @@
 """
 Launch Chrome for YouTube Music playback with CDP enabled.
 
-Defaults to a dedicated profile for reliability, but can also reuse the
-system Chrome profile when the user explicitly requests it.
+Uses a dedicated profile by default because modern Chrome versions no longer
+allow remote debugging against the default Chrome data directory.
 """
 
 import argparse
@@ -82,6 +82,24 @@ def _find_chrome() -> str:
     raise FileNotFoundError("Could not find Google Chrome/Chromium on this system")
 
 
+def _chrome_major_version(chrome_path: str) -> int | None:
+    result = subprocess.run(
+        [chrome_path, "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    for part in result.stdout.strip().split():
+        if part[:1].isdigit():
+            try:
+                return int(part.split(".", 1)[0])
+            except ValueError:
+                return None
+    return None
+
+
 def _build_command(chrome_path: str, args: argparse.Namespace) -> list[str]:
     command = [
         chrome_path,
@@ -144,7 +162,7 @@ def main() -> None:
     parser.add_argument(
         "--use-system-profile",
         action="store_true",
-        help="Reuse the platform default Chrome user-data-dir instead of the dedicated launcher profile",
+        help="Attempt to reuse the platform default Chrome user-data-dir; blocked by Chrome 136+",
     )
     parser.add_argument(
         "--user-data-dir",
@@ -179,14 +197,46 @@ def main() -> None:
     args.user_data_dir = args.user_data_dir.expanduser().resolve()
     args.user_data_dir.mkdir(parents=True, exist_ok=True)
 
+    try:
+        chrome_path = _find_chrome()
+    except FileNotFoundError as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2))
+        sys.exit(1)
+
+    chrome_major_version = _chrome_major_version(chrome_path)
+
+    if profile_mode == "system" and chrome_major_version is not None and chrome_major_version >= 136:
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        "Chrome 136+ does not allow --remote-debugging-port against the default Chrome "
+                        "user data directory."
+                    ),
+                    "chrome_version": chrome_major_version,
+                    "next_action": (
+                        "Use the dedicated launcher profile instead, or switch the skill to a separate "
+                        "Chrome for Testing workflow."
+                    ),
+                    "details": [
+                        "This is an official Chrome security change, not a launcher bug.",
+                        "Reusing your normal signed-in Chrome profile is unsupported for this CDP-based skill on modern Chrome.",
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        sys.exit(1)
+
     if profile_mode == "system" and _chrome_running():
         print(
             json.dumps(
                 {
                     "error": "Chrome appears to already be running.",
                     "next_action": (
-                        "Fully quit Chrome, then rerun this command to relaunch your existing profile "
-                        "with remote debugging enabled."
+                        "Fully quit Chrome, then rerun this command. Even then, modern Chrome versions "
+                        "still block remote debugging on the default profile."
                     ),
                     "user_data_dir": str(args.user_data_dir),
                     "profile_directory": args.profile_directory,
@@ -197,12 +247,6 @@ def main() -> None:
         )
         sys.exit(1)
 
-    try:
-        chrome_path = _find_chrome()
-    except FileNotFoundError as exc:
-        print(json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2))
-        sys.exit(1)
-
     subprocess.Popen(
         _build_command(chrome_path, args),
         stdout=subprocess.DEVNULL,
@@ -210,31 +254,25 @@ def main() -> None:
         start_new_session=True,
     )
 
-    if profile_mode == "system":
-        notes = [
-            "The launcher reused the platform Chrome user-data-dir.",
-            "If you passed --profile-directory, Chrome will target that profile inside the user-data-dir.",
-            "Keep that Chrome window running while using scripts/player.py commands, including status.",
-        ]
-    else:
-        notes = [
-            "A dedicated Chrome profile was launched for remote debugging.",
-            "If this is the first launch for that profile, sign in to music.youtube.com in the new window.",
-            "Keep that Chrome window running while using scripts/player.py commands, including status.",
-        ]
-        if platform.system() == "Darwin":
-            notes.insert(
-                0,
-                "On macOS this avoids the less reliable `open -a 'Google Chrome' --args ...` path.",
-            )
+    notes = [
+        "A dedicated Chrome profile was launched for remote debugging.",
+        "If this is the first launch for that profile, sign in to music.youtube.com in the new window.",
+        "Keep that Chrome window running while using scripts/player.py commands, including status.",
+    ]
+    if platform.system() == "Darwin":
+        notes.insert(
+            0,
+            "On macOS this avoids the less reliable `open -a 'Google Chrome' --args ...` path.",
+        )
 
     print(
         json.dumps(
             {
                 "status": "launched",
-                "profile_mode": profile_mode,
+                "profile_mode": "dedicated" if profile_mode == "system" else profile_mode,
                 "platform": platform.system().lower(),
                 "chrome_path": chrome_path,
+                "chrome_version": chrome_major_version,
                 "chrome_port": args.chrome_port,
                 "user_data_dir": str(args.user_data_dir),
                 "profile_directory": args.profile_directory,
