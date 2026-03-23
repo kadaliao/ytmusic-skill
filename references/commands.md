@@ -131,9 +131,12 @@ Start Chrome first:
 uv run python scripts/launch_chrome.py
 uv run python scripts/launch_chrome.py --chrome-port 9223
 uv run python scripts/launch_chrome.py --user-data-dir ~/.ytmusic-chrome-profile
+uv run python scripts/launch_chrome.py --use-system-profile --profile-directory Default
+uv run python scripts/launch_chrome.py --use-system-profile --profile-directory 'Profile 1'
 ```
 
 On macOS, prefer the launcher script over `open -a 'Google Chrome' --args ...` because it uses a dedicated `--user-data-dir` and is more reliable for remote debugging.
+To reuse your normal Chrome profile, fully quit Chrome first and then use `--use-system-profile`.
 
 Then control the existing signed-in Chrome session:
 
@@ -153,5 +156,6 @@ uv run --with playwright python scripts/player.py --chrome-port 9222 status
 
 Notes:
 - If the launcher created a fresh Chrome profile, sign in to `music.youtube.com` in that launched window before using player commands
+- If you reused the system profile, fully quitting Chrome first is required or the new debugging flags may be ignored
 - If `open <videoId>` navigates correctly but audio does not start, autoplay was likely blocked and manual play may be required once
 - `status` also requires the debugging session; it will fail if Chrome was not launched for CDP
