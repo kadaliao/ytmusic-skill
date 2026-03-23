@@ -59,10 +59,11 @@ def connect_chrome(playwright, port: int = 9222):
         bail(
             f"Could not connect to Chrome on port {port}.\n\n"
             f"Start Chrome with remote debugging enabled:\n"
-            f"  macOS:   open -a 'Google Chrome' --args --remote-debugging-port={port}\n"
+            f"  macOS:   uv run python scripts/launch_chrome.py --chrome-port {port}\n"
             f"  Linux:   google-chrome --remote-debugging-port={port}\n"
             f"  Windows: chrome.exe --remote-debugging-port={port}\n\n"
-            f"Make sure you are already signed in at https://music.youtube.com, then retry."
+            f"On macOS, prefer a dedicated --user-data-dir for Chrome remote debugging.\n"
+            f"Make sure you are already signed in at https://music.youtube.com in that launched session, then retry."
         )
 
 
