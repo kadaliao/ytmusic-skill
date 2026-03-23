@@ -40,8 +40,10 @@ Examples:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import NoReturn
@@ -57,8 +59,10 @@ def _resolve_data_dir() -> Path:
 SCRIPT_PATH = Path(__file__).resolve()
 DATA_DIR = _resolve_data_dir()
 AUTH_FILE = DATA_DIR / "auth.json"
+BROWSER_COOKIES_FILE = DATA_DIR / "browser_cookies.json"
 BROWSER_DATA_DIR = DATA_DIR / "browser-profile"
 YTM_URL = "https://music.youtube.com"
+DEFAULT_OPEN_HOLD_SECONDS = 15
 
 KEYS = {
     "toggle": "k",
@@ -83,6 +87,37 @@ def bail(msg: str) -> NoReturn:
 
 def out(data: dict) -> None:
     print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def _normalize_same_site(value) -> str:
+    if value is None:
+        return "None"
+    normalized = str(value).strip().lower().replace("-", "_")
+    mapping = {
+        "strict": "Strict",
+        "lax": "Lax",
+        "none": "None",
+        "no_restriction": "None",
+        "unspecified": "None",
+        "null": "None",
+        "": "None",
+    }
+    return mapping.get(normalized, "Lax")
+
+
+def _clear_profile_locks(profile_dir: Path) -> None:
+    lock_names = {
+        "SingletonLock",
+        "SingletonSocket",
+        "SingletonCookie",
+        "lockfile",
+    }
+    for path in profile_dir.rglob("*"):
+        if path.name in lock_names and path.is_file():
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 # ─── Setup: Playwright chromium (isolated mode only) ─────────────────────────
@@ -118,23 +153,40 @@ def _install_chromium() -> None:
         )
 
 
-# ─── Auth: parse cookies from auth.json (isolated mode only) ─────────────────
+# ─── Auth: parse cookies for isolated mode ────────────────────────────────────
 
 def load_cookies() -> list[dict]:
-    """Parse cookies from auth.json into Playwright cookie dicts.
+    """Parse cookies into Playwright cookie dicts.
 
     Supports two formats:
-    - cookies_json: full cookie objects imported via `helper.py auth setup --cookies-file`
+    - browser_cookies.json: full cookie objects imported via `helper.py auth setup --cookies-file`
     - Cookie string: legacy format, parsed from the raw Cookie header value
     """
-    if not AUTH_FILE.exists():
-        return []
     try:
+        if BROWSER_COOKIES_FILE.exists():
+            cookies = json.loads(BROWSER_COOKIES_FILE.read_text())
+            if isinstance(cookies, list):
+                normalized = []
+                for cookie in cookies:
+                    if not isinstance(cookie, dict):
+                        continue
+                    item = dict(cookie)
+                    item["sameSite"] = _normalize_same_site(item.get("sameSite"))
+                    normalized.append(item)
+                return normalized
+        if not AUTH_FILE.exists():
+            return []
         auth = json.loads(AUTH_FILE.read_text())
-        # Prefer full cookie objects when available (more accurate attributes)
-        if "cookies_json" in auth:
-            return auth["cookies_json"]
-        cookie_str = auth.get("Cookie", "")
+        if isinstance(auth, dict) and isinstance(auth.get("cookies_json"), list):
+            normalized = []
+            for cookie in auth["cookies_json"]:
+                if not isinstance(cookie, dict):
+                    continue
+                item = dict(cookie)
+                item["sameSite"] = _normalize_same_site(item.get("sameSite"))
+                normalized.append(item)
+            return normalized
+        cookie_str = auth.get("Cookie", "") if isinstance(auth, dict) else ""
     except Exception:
         return []
 
@@ -194,19 +246,44 @@ def launch_persistent(playwright, headless: bool = False):
     """
     Launch a persistent Chromium context backed by BROWSER_DATA_DIR.
     The cookies database is cleared before each launch so that fresh cookies
-    from auth.json are always used — no stale session state.
-    Returns (context, page).
+    from browser_cookies.json are always used — no stale session state.
+    Returns (context, page, cleanup_fn).
     """
     BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _clear_profile_locks(BROWSER_DATA_DIR)
 
     # Delete the stored cookies file so our injected cookies are the only ones.
-    # Avoids stale/expired cookies in the profile overriding auth.json.
+    # Avoids stale/expired cookies in the profile overriding imported cookies.
     cookies_db = BROWSER_DATA_DIR / "Default" / "Network" / "Cookies"
     if cookies_db.exists():
-        cookies_db.unlink()
+        try:
+            cookies_db.unlink()
+        except OSError:
+            pass
 
-    context = playwright.chromium.launch_persistent_context(
-        str(BROWSER_DATA_DIR),
+    profile_dir = BROWSER_DATA_DIR
+    cleanup_fn = lambda: None
+    try:
+        context = _launch_persistent_context(playwright, profile_dir, headless=headless)
+    except Exception as exc:
+        if "ProcessSingleton" not in str(exc) and "Singleton" not in str(exc):
+            raise
+        profile_dir = Path(tempfile.mkdtemp(prefix="ytmusic-profile-", dir=str(DATA_DIR)))
+        cleanup_fn = lambda: shutil.rmtree(profile_dir, ignore_errors=True)
+        context = _launch_persistent_context(playwright, profile_dir, headless=headless)
+
+    cookies = load_cookies()
+    if cookies:
+        context.add_cookies(cookies)
+        _inject_cookie_header(context, cookies)
+    page = context.pages[0] if context.pages else context.new_page()
+    return context, page, cleanup_fn
+
+
+def _launch_persistent_context(playwright, profile_dir: Path, headless: bool = False):
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return playwright.chromium.launch_persistent_context(
+        str(profile_dir),
         headless=headless,
         args=["--autoplay-policy=no-user-gesture-required"],
         user_agent=(
@@ -216,18 +293,12 @@ def launch_persistent(playwright, headless: bool = False):
         ),
         viewport={"width": 1280, "height": 800},
     )
-    cookies = load_cookies()
-    if cookies:
-        context.add_cookies(cookies)
-        _inject_cookie_header(context, cookies)
-    page = context.pages[0] if context.pages else context.new_page()
-    return context, page
 
 
 def _inject_cookie_header(context, cookies: list[dict]) -> None:
     """
     Intercept all YouTube Music requests and force the Cookie header to match
-    auth.json. This ensures the server sees a complete, up-to-date session
+    browser_cookies.json. This ensures the server sees a complete, up-to-date session
     even when the browser's internal cookie storage has stale data.
     """
     raw = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
@@ -283,11 +354,11 @@ def get_page(pw, args):
     if getattr(args, "mode", "isolated") == "chrome":
         browser = connect_chrome(pw, getattr(args, "chrome_port", 9222))
         page = find_or_open_ytm(browser)
-        return browser.close, page
+        return browser.close, page, (lambda: None)
     else:
-        ctx, page = launch_persistent(pw, headless=False)
+        ctx, page, cleanup_fn = launch_persistent(pw, headless=False)
         navigate_to_ytm(page)
-        return ctx.close, page
+        return ctx.close, page, cleanup_fn
 
 
 # ─── Navigation / wait helpers ────────────────────────────────────────────────
@@ -360,6 +431,61 @@ def _get_status(page) -> dict:
         return {"error": str(e)}
 
 
+def _attempt_start_playback(page) -> str:
+    try:
+        started = page.evaluate("""
+            async () => {
+                const video = document.querySelector('video');
+                if (!video) return false;
+                try {
+                    await video.play();
+                    return !video.paused;
+                } catch {
+                    return false;
+                }
+            }
+        """)
+        if started:
+            return "video.play()"
+    except Exception:
+        pass
+
+    for method, action in [
+        ("play_button", lambda: page.locator("tp-yt-paper-icon-button.play-pause-button").first.click(timeout=3000)),
+        ("toggle_key", lambda: send_key(page, KEYS["toggle"])),
+    ]:
+        try:
+            action()
+            time.sleep(0.8)
+            if _is_playing(page):
+                return method
+        except Exception:
+            continue
+    return "failed"
+
+
+def _ensure_playing(page, timeout_ms: int = 12000) -> tuple[bool, list[str]]:
+    deadline = time.time() + (timeout_ms / 1000)
+    actions: list[str] = []
+    while time.time() < deadline:
+        if _is_playing(page):
+            return True, actions
+        action = _attempt_start_playback(page)
+        if action != "failed":
+            actions.append(action)
+        if _is_playing(page):
+            return True, actions
+        time.sleep(1.0)
+    return _is_playing(page), actions
+
+
+def _close_with_cleanup(close_fn, cleanup_fn) -> None:
+    try:
+        close_fn()
+    finally:
+        cleanup_fn()
+
+
 # ─── Actions ──────────────────────────────────────────────────────────────────
 
 def cmd_open(args):
@@ -376,32 +502,45 @@ def cmd_open(args):
         if mode == "chrome":
             browser = connect_chrome(pw, getattr(args, "chrome_port", 9222))
             page = find_or_open_ytm(browser)
-            page.goto(url, wait_until="domcontentloaded")
             try:
-                page.wait_for_selector(SELECTORS["player_bar"], timeout=15000)
-                time.sleep(2)
-            except Exception:
-                pass
-            status = _get_status(page)
-            out({"action": "open", "url": url, "mode": "chrome", **status})
-            browser.close()
+                page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                wait_for_player(page, timeout=20000)
+                verified, recovery_actions = _ensure_playing(page)
+                status = _get_status(page)
+                out({
+                    "action": "open",
+                    "url": url,
+                    "mode": "chrome",
+                    "playback_verified": verified,
+                    "recovery_actions": recovery_actions,
+                    **status,
+                })
+            finally:
+                browser.close()
         else:
-            ctx, page = launch_persistent(pw, headless=args.headless)
-            page.goto(url, wait_until="domcontentloaded")
+            ctx = None
+            cleanup_fn = lambda: None
             try:
-                page.wait_for_selector(SELECTORS["player_bar"], timeout=15000)
-                time.sleep(2)
-            except Exception:
-                pass
-            status = _get_status(page)
-            out({"action": "open", "url": url, "mode": "isolated", **status})
-            # Keep browser alive until music ends (or Ctrl+C)
-            try:
-                duration = status.get("duration_seconds", 0) or 300
-                time.sleep(max(duration, 10))
-            except KeyboardInterrupt:
-                pass
-            ctx.close()
+                ctx, page, cleanup_fn = launch_persistent(pw, headless=args.headless)
+                page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                wait_for_player(page, timeout=20000)
+                verified, recovery_actions = _ensure_playing(page)
+                status = _get_status(page)
+                hold_seconds = max(0, args.hold_open_seconds)
+                out({
+                    "action": "open",
+                    "url": url,
+                    "mode": "isolated",
+                    "playback_verified": verified,
+                    "recovery_actions": recovery_actions,
+                    "hold_open_seconds": hold_seconds,
+                    **status,
+                })
+                if hold_seconds > 0:
+                    time.sleep(hold_seconds)
+            finally:
+                if ctx is not None:
+                    _close_with_cleanup(ctx.close, cleanup_fn)
 
 
 def cmd_control(action: str, args):
@@ -411,29 +550,34 @@ def cmd_control(action: str, args):
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
-        close, page = get_page(pw, args)
-        wait_for_player(page)
+        close = lambda: None
+        cleanup_fn = lambda: None
+        try:
+            close, page, cleanup_fn = get_page(pw, args)
+            wait_for_player(page)
 
-        if action == "toggle":
-            send_key(page, KEYS["toggle"])
-            time.sleep(0.3)
-        elif action == "play":
-            if not _is_playing(page):
+            if action == "toggle":
                 send_key(page, KEYS["toggle"])
                 time.sleep(0.3)
-        elif action == "pause":
-            if _is_playing(page):
-                send_key(page, KEYS["toggle"])
-                time.sleep(0.3)
-        elif action == "next":
-            send_key(page, KEYS["next"])
-            time.sleep(1.5)
-        elif action == "prev":
-            send_key(page, KEYS["prev"])
-            time.sleep(1.5)
+            elif action == "play":
+                if not _is_playing(page):
+                    send_key(page, KEYS["toggle"])
+                    time.sleep(0.3)
+                    _ensure_playing(page, timeout_ms=5000)
+            elif action == "pause":
+                if _is_playing(page):
+                    send_key(page, KEYS["toggle"])
+                    time.sleep(0.3)
+            elif action == "next":
+                send_key(page, KEYS["next"])
+                time.sleep(1.5)
+            elif action == "prev":
+                send_key(page, KEYS["prev"])
+                time.sleep(1.5)
 
-        status = _get_status(page)
-        close()
+            status = _get_status(page)
+        finally:
+            _close_with_cleanup(close, cleanup_fn)
     out({"action": action, **status})
 
 
@@ -444,18 +588,22 @@ def cmd_volume(args):
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
-        close, page = get_page(pw, args)
-        wait_for_player(page)
-        result = page.evaluate(f"""
-            (() => {{
-                const v = document.querySelector('video');
-                if (!v) return 'video_not_found';
-                v.volume = {level / 100};
-                v.muted = false;
-                return Math.round(v.volume * 100);
-            }})()
-        """)
-        close()
+        close = lambda: None
+        cleanup_fn = lambda: None
+        try:
+            close, page, cleanup_fn = get_page(pw, args)
+            wait_for_player(page)
+            result = page.evaluate(f"""
+                (() => {{
+                    const v = document.querySelector('video');
+                    if (!v) return 'video_not_found';
+                    v.volume = {level / 100};
+                    v.muted = false;
+                    return Math.round(v.volume * 100);
+                }})()
+            """)
+        finally:
+            _close_with_cleanup(close, cleanup_fn)
     out({"action": "volume", "level": level, "result": result})
 
 
@@ -466,19 +614,23 @@ def cmd_seek(args):
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
-        close, page = get_page(pw, args)
-        wait_for_player(page)
-        result = page.evaluate(f"""
-            (() => {{
-                const v = document.querySelector('video');
-                if (!v) return 'video_not_found';
-                v.currentTime = {seconds};
-                return Math.floor(v.currentTime);
-            }})()
-        """)
-        time.sleep(0.3)
-        status = _get_status(page)
-        close()
+        close = lambda: None
+        cleanup_fn = lambda: None
+        try:
+            close, page, cleanup_fn = get_page(pw, args)
+            wait_for_player(page)
+            result = page.evaluate(f"""
+                (() => {{
+                    const v = document.querySelector('video');
+                    if (!v) return 'video_not_found';
+                    v.currentTime = {seconds};
+                    return Math.floor(v.currentTime);
+                }})()
+            """)
+            time.sleep(0.3)
+            status = _get_status(page)
+        finally:
+            _close_with_cleanup(close, cleanup_fn)
     out({"action": "seek", "target_seconds": seconds, "result": result, **status})
 
 
@@ -488,18 +640,20 @@ def cmd_shuffle(args):
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
-        close, page = get_page(pw, args)
-        wait_for_player(page)
+        close = lambda: None
+        cleanup_fn = lambda: None
         try:
+            close, page, cleanup_fn = get_page(pw, args)
+            wait_for_player(page)
             btn = page.locator(SELECTORS["shuffle"])
             btn.click()
             time.sleep(0.3)
             active = btn.get_attribute("aria-checked") == "true"
-            close()
             out({"action": "shuffle", "shuffle_on": active})
         except Exception as e:
-            close()
             bail(f"Could not find shuffle button: {e}")
+        finally:
+            _close_with_cleanup(close, cleanup_fn)
 
 
 def cmd_repeat(args):
@@ -508,18 +662,20 @@ def cmd_repeat(args):
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
-        close, page = get_page(pw, args)
-        wait_for_player(page)
+        close = lambda: None
+        cleanup_fn = lambda: None
         try:
+            close, page, cleanup_fn = get_page(pw, args)
+            wait_for_player(page)
             btn = page.locator(SELECTORS["repeat"])
             btn.click()
             time.sleep(0.3)
             mode = btn.get_attribute("aria-label") or "unknown"
-            close()
             out({"action": "repeat", "mode": mode})
         except Exception as e:
-            close()
             bail(f"Could not find repeat button: {e}")
+        finally:
+            _close_with_cleanup(close, cleanup_fn)
 
 
 def cmd_status(args):
@@ -528,10 +684,14 @@ def cmd_status(args):
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
-        close, page = get_page(pw, args)
-        wait_for_player(page)
-        status = _get_status(page)
-        close()
+        close = lambda: None
+        cleanup_fn = lambda: None
+        try:
+            close, page, cleanup_fn = get_page(pw, args)
+            wait_for_player(page)
+            status = _get_status(page)
+        finally:
+            _close_with_cleanup(close, cleanup_fn)
     out({"action": "status", **status})
 
 
@@ -545,7 +705,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--mode", choices=["isolated", "chrome"], default="isolated",
         help=(
-            "isolated (default): self-managed Chromium, cookies from auth.json; "
+            "isolated (default): self-managed Chromium, cookies from browser_cookies.json; "
             "chrome: connect to your existing Chrome via CDP"
         ),
     )
@@ -554,6 +714,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="CDP port when using --mode chrome (default: 9222)",
     )
     p.add_argument("--headless", action="store_true", help="Run in headless mode (isolated only)")
+    p.add_argument(
+        "--hold-open-seconds",
+        type=int,
+        default=DEFAULT_OPEN_HOLD_SECONDS,
+        dest="hold_open_seconds",
+        help="How long `open` keeps isolated playback alive before exiting (default: 15, use 0 for immediate exit)",
+    )
     sub = p.add_subparsers(dest="action", metavar="ACTION")
 
     po = sub.add_parser("open", help="Open and play a song by videoId")

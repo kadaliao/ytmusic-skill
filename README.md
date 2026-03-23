@@ -26,12 +26,14 @@ ytmusic-skill/
 │   └── commands.md
 └── .ytmusic/
     ├── auth.json
+    ├── browser_cookies.json
     └── browser-profile/
 ```
 
 By default:
-- `scripts/helper.py` reads and writes `./.ytmusic/auth.json`
-- `scripts/player.py` uses `./.ytmusic/auth.json` and `./.ytmusic/browser-profile/`
+- `scripts/helper.py` stores API auth headers in `./.ytmusic/auth.json`
+- `scripts/helper.py` stores browser cookies in `./.ytmusic/browser_cookies.json`
+- `scripts/player.py` uses `./.ytmusic/browser_cookies.json` and `./.ytmusic/browser-profile/`
 
 If needed, you can override the runtime data directory with `YTMUSIC_DATA_DIR`.
 
@@ -76,6 +78,7 @@ Examples:
 uv run --with playwright python scripts/player.py open <videoId>
 uv run --with playwright python scripts/player.py --mode chrome status
 uv run --with playwright python scripts/player.py --mode chrome --chrome-port 9222 next
+uv run --with playwright python scripts/player.py --hold-open-seconds 0 open <videoId>
 ```
 
 ## Notes

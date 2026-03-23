@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import tempfile
 import sys
 import time
 from pathlib import Path
@@ -25,6 +26,8 @@ def _resolve_data_dir() -> Path:
 SCRIPT_PATH = Path(__file__).resolve()
 DATA_DIR = _resolve_data_dir()
 AUTH_FILE = DATA_DIR / "auth.json"
+BROWSER_COOKIES_FILE = DATA_DIR / "browser_cookies.json"
+AUTH_HEADER_KEYS = {"Authorization", "Cookie", "X-Goog-AuthUser", "x-origin"}
 
 
 def auth_setup_instructions() -> dict:
@@ -81,6 +84,77 @@ def auth_setup_instructions() -> dict:
     }
 
 
+def _write_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=path.parent) as tmp:
+        json.dump(data, tmp, indent=2, ensure_ascii=False)
+        tmp.write("\n")
+    Path(tmp.name).replace(path)
+
+
+def _sanitize_auth_headers(data: dict) -> dict:
+    return {key: value for key, value in data.items() if key in AUTH_HEADER_KEYS and isinstance(value, str)}
+
+
+def _normalize_same_site(value) -> str:
+    if value is None:
+        return "None"
+    normalized = str(value).strip().lower().replace("-", "_")
+    mapping = {
+        "strict": "Strict",
+        "lax": "Lax",
+        "none": "None",
+        "no_restriction": "None",
+        "unspecified": "None",
+        "null": "None",
+        "": "None",
+    }
+    return mapping.get(normalized, "Lax")
+
+
+def _normalize_cookie_record(cookie: dict) -> dict | None:
+    if not isinstance(cookie, dict) or "name" not in cookie or "value" not in cookie:
+        return None
+    domain = str(cookie.get("domain", "")).strip()
+    if not domain or not any(d in domain for d in ["youtube.com", "google.com"]):
+        return None
+    norm_domain = domain if domain.startswith(".") else f".{domain}"
+    normalized = {
+        "name": str(cookie["name"]),
+        "value": str(cookie["value"]),
+        "domain": norm_domain,
+        "path": str(cookie.get("path", "/") or "/"),
+        "secure": bool(cookie.get("secure", False)),
+        "httpOnly": bool(cookie.get("httpOnly", False)),
+        "sameSite": _normalize_same_site(cookie.get("sameSite")),
+    }
+    expiry = cookie.get("expirationDate", cookie.get("expires"))
+    if isinstance(expiry, (int, float)) and expiry > 0:
+        normalized["expires"] = int(expiry)
+    return normalized
+
+
+def _migrate_legacy_auth_file() -> None:
+    if not AUTH_FILE.exists():
+        return
+    try:
+        raw = json.loads(AUTH_FILE.read_text())
+    except Exception:
+        return
+    if not isinstance(raw, dict):
+        return
+
+    headers = _sanitize_auth_headers(raw)
+    cookies = raw.get("cookies_json")
+    changed = set(raw) != set(headers) or bool(cookies)
+    if cookies:
+        normalized = [item for item in (_normalize_cookie_record(cookie) for cookie in cookies) if item]
+        if normalized:
+            _write_json(BROWSER_COOKIES_FILE, normalized)
+    if changed:
+        _write_json(AUTH_FILE, headers)
+
+
 # ─── Auth ────────────────────────────────────────────────────────────────────
 
 def build_auth_from_cookie(cookie_string: str) -> dict:
@@ -113,6 +187,7 @@ def build_auth_from_cookie(cookie_string: str) -> dict:
 
 def get_yt(require_auth=False):
     from ytmusicapi import YTMusic
+    _migrate_legacy_auth_file()
     if AUTH_FILE.exists():
         return YTMusic(str(AUTH_FILE))
     if require_auth:
@@ -139,6 +214,7 @@ def out(data):
 
 def cmd_auth(args):
     if args.action == "check":
+        _migrate_legacy_auth_file()
         if AUTH_FILE.exists():
             out({"status": "ok", "path": str(AUTH_FILE)})
         else:
@@ -156,8 +232,7 @@ def cmd_auth(args):
             if not cookie:
                 bail("No cookie provided. Pass --cookie '<string>' or --cookies-file cookies.json")
             headers = build_auth_from_cookie(cookie)
-            AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-            AUTH_FILE.write_text(json.dumps(headers, indent=2, ensure_ascii=False))
+            _write_json(AUTH_FILE, headers)
             out({"status": "saved", "path": str(AUTH_FILE)})
 
     elif args.action == "account":
@@ -167,6 +242,8 @@ def cmd_auth(args):
     elif args.action == "remove":
         if AUTH_FILE.exists():
             AUTH_FILE.unlink()
+            if BROWSER_COOKIES_FILE.exists():
+                BROWSER_COOKIES_FILE.unlink()
             out({"status": "removed"})
         else:
             out({"status": "already_missing"})
@@ -175,12 +252,11 @@ def cmd_auth(args):
 def _import_cookies_json(path: str) -> None:
     """
     Import a full cookie JSON export (array of cookie objects from a browser extension
-    such as Cookie-Editor or EditThisCookie) into auth.json.
+    such as Cookie-Editor or EditThisCookie) into sidecar storage.
 
     Stores:
-    - cookies_json: full Playwright-ready cookie objects (used by player.py)
-    - Cookie: reconstructed Cookie string (used by ytmusicapi / helper.py)
-    - Authorization, X-Goog-AuthUser, x-origin: standard auth headers
+    - browser_cookies.json: full Playwright-ready cookie objects (used by player.py)
+    - auth.json: Cookie / Authorization headers for ytmusicapi only
     """
     p = Path(path)
     if not p.exists():
@@ -195,24 +271,12 @@ def _import_cookies_json(path: str) -> None:
     normalized: list = []
     cookie_parts: list = []
     for c in raw:
-        if not isinstance(c, dict) or "name" not in c or "value" not in c:
+        normalized_cookie = _normalize_cookie_record(c)
+        if not normalized_cookie:
             continue
-        domain = c.get("domain", "")
-        # Keep only YouTube / Google cookies
-        if not any(d in domain for d in ["youtube.com", "google.com"]):
-            continue
-        norm_domain = domain if domain.startswith(".") else f".{domain}"
-        normalized.append({
-            "name": c["name"],
-            "value": c["value"],
-            "domain": norm_domain,
-            "path": c.get("path", "/"),
-            "secure": bool(c.get("secure", False)),
-            "httpOnly": bool(c.get("httpOnly", False)),
-            "sameSite": c.get("sameSite", "Lax"),
-        })
-        if "youtube.com" in domain:
-            cookie_parts.append(f"{c['name']}={c['value']}")
+        normalized.append(normalized_cookie)
+        if "youtube.com" in normalized_cookie["domain"]:
+            cookie_parts.append(f"{normalized_cookie['name']}={normalized_cookie['value']}")
 
     if not normalized:
         bail("No YouTube/Google cookies found in the file")
@@ -224,9 +288,8 @@ def _import_cookies_json(path: str) -> None:
         auth_data = {"Cookie": cookie_str, "X-Goog-AuthUser": "0",
                      "x-origin": "https://music.youtube.com"}
 
-    auth_data["cookies_json"] = normalized
-    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    AUTH_FILE.write_text(json.dumps(auth_data, indent=2, ensure_ascii=False))
+    _write_json(AUTH_FILE, _sanitize_auth_headers(auth_data))
+    _write_json(BROWSER_COOKIES_FILE, normalized)
     out({"status": "saved", "path": str(AUTH_FILE), "cookies_imported": len(normalized)})
 
 
