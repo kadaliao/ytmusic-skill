@@ -1,7 +1,7 @@
 ---
 name: ytmusic
 description: Operate YouTube Music via natural language. Search songs, artists, albums, playlists, lyrics, charts, recommendations, and control playback. Browse personal library, manage playlists, rate tracks, and inspect account info. Use this skill whenever the user asks about YouTube Music, wants to play music, manage playlists, search by song or artist name, inspect lyrics, or control playback.
-version: 0.1.2
+version: 0.2.0
 metadata:
   openclaw:
     requires:
@@ -18,10 +18,10 @@ metadata:
 Run bundled scripts from the skill root:
 
 - `scripts/helper.py`: search, library, playlists, lyrics, ratings, account
-- `scripts/player.py`: play, pause, next, prev, volume, seek, status
-- `scripts/launch_chrome.py`: launch a dedicated Chrome profile for CDP playback control
+- `scripts/player.py`: playback client and daemon management
+- `scripts/player_daemon.py`: persistent Playwright browser daemon
 - Runtime state is local to `./.ytmusic/`
-- Playback requires an already running Chrome session with remote debugging enabled
+- Playback uses a dedicated Playwright-managed browser profile in `./.ytmusic/playwright-profile`
 
 ## Workflow
 
@@ -129,28 +129,10 @@ Full command reference: `references/commands.md`
 
 ## Playback
 
-Playback only works through Chrome CDP. `open`, `play`, `pause`, `next`, `prev`, `seek`, `volume`, and `status` all depend on the same Chrome remote debugging session.
+Playback runs through a persistent Playwright browser daemon. The first playback command auto-starts a dedicated browser window and reuses it for later `open`, `play`, `pause`, `next`, `prev`, `seek`, `volume`, and `status` commands.
 
 ```bash
-uv run python scripts/launch_chrome.py
-uv run python scripts/launch_chrome.py --chrome-port 9223
-uv run python scripts/launch_chrome.py --user-data-dir ~/.ytmusic-chrome-profile
-```
-
-On macOS, prefer `scripts/launch_chrome.py` over `open -a 'Google Chrome' --args ...`.
-The launcher starts Chrome with a dedicated `--user-data-dir`, which is more reliable for remote debugging on macOS.
-On modern Chrome, this is also required: Chrome 136+ no longer respects `--remote-debugging-port` for the default Chrome data directory.
-
-Important behavior:
-- The launched Chrome window uses its own profile directory
-- The user may need to sign in to `music.youtube.com` again inside that launched window
-- Reusing the normal Chrome profile is not supported for this CDP workflow on Chrome 136+
-- If `open <videoId>` loads the page but playback is still paused, autoplay was likely blocked and the user may need to click play once in that Chrome window
-- `status` is not an offline state reader; it also requires the Chrome debugging session to be running
-
-After Chrome is running and signed in at `music.youtube.com`:
-
-```bash
+uv run --with playwright python scripts/player.py daemon-start
 uv run --with playwright python scripts/player.py open <videoId>
 uv run --with playwright python scripts/player.py play
 uv run --with playwright python scripts/player.py pause
@@ -159,15 +141,22 @@ uv run --with playwright python scripts/player.py prev
 uv run --with playwright python scripts/player.py status
 uv run --with playwright python scripts/player.py volume <0-100>
 uv run --with playwright python scripts/player.py seek <seconds>
-uv run --with playwright python scripts/player.py --chrome-port 9222 status
+uv run --with playwright python scripts/player.py daemon-status
+uv run --with playwright python scripts/player.py daemon-stop
 ```
 
+Important behavior:
+- The daemon launches a dedicated persistent browser profile in `./.ytmusic/playwright-profile`
+- On first launch, the user may need to sign in to `music.youtube.com` in that browser window
+- The user does not need to start Chrome or open a debugging port manually
+- If `open <videoId>` loads the page but playback is still paused, autoplay was likely blocked and the user may need to click play once in the daemon-managed window
+- `daemon-status` checks whether the background browser is alive without starting a new one
+
 If playback commands fail, first verify:
-- Chrome is already running with `--remote-debugging-port=9222`
-- On macOS, Chrome was launched with a dedicated `--user-data-dir` such as `scripts/launch_chrome.py`
-- Do not expect the normal Chrome profile to work with remote debugging on Chrome 136+
-- The user is signed in at `music.youtube.com`
-- The requested song page can actually play in that Chrome session
+- The daemon-managed browser window is still open
+- The user is signed in at `music.youtube.com` in that browser window if the requested track requires it
+- The requested song page can actually play in that browser session
+- `./.ytmusic/player-daemon.log` does not show a launch or Playwright error
 
 ## Output
 

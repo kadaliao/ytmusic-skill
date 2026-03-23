@@ -120,23 +120,18 @@ user <channelId>
 Run player commands as:
 
 ```bash
-uv run --with playwright python scripts/player.py [--chrome-port N] <action> [args]
+uv run --with playwright python scripts/player.py <action> [args]
 ```
 
-The player only works through Chrome remote debugging.
+The player uses a persistent Playwright daemon with a dedicated browser profile.
 
-Start Chrome first:
+The first playback command auto-starts the daemon if needed:
 
 ```bash
-uv run python scripts/launch_chrome.py
-uv run python scripts/launch_chrome.py --chrome-port 9223
-uv run python scripts/launch_chrome.py --user-data-dir ~/.ytmusic-chrome-profile
+uv run --with playwright python scripts/player.py daemon-start
 ```
 
-On macOS, prefer the launcher script over `open -a 'Google Chrome' --args ...` because it uses a dedicated `--user-data-dir` and is more reliable for remote debugging.
-On Chrome 136+, the dedicated `--user-data-dir` is required because Chrome no longer respects remote debugging switches for the default Chrome data directory.
-
-Then control the existing signed-in Chrome session:
+Then control the persistent browser session:
 
 ```bash
 uv run --with playwright python scripts/player.py status
@@ -149,11 +144,12 @@ uv run --with playwright python scripts/player.py volume <0-100>
 uv run --with playwright python scripts/player.py seek <seconds>
 uv run --with playwright python scripts/player.py shuffle
 uv run --with playwright python scripts/player.py repeat
-uv run --with playwright python scripts/player.py --chrome-port 9222 status
+uv run --with playwright python scripts/player.py daemon-status
+uv run --with playwright python scripts/player.py daemon-stop
 ```
 
 Notes:
-- If the launcher created a fresh Chrome profile, sign in to `music.youtube.com` in that launched window before using player commands
-- Reusing the normal Chrome profile is not supported for this CDP workflow on Chrome 136+
+- The daemon uses `./.ytmusic/playwright-profile` to keep its own persistent browser session
+- On first launch, sign in to `music.youtube.com` in that browser window if needed
 - If `open <videoId>` navigates correctly but audio does not start, autoplay was likely blocked and manual play may be required once
-- `status` also requires the debugging session; it will fail if Chrome was not launched for CDP
+- `daemon-status` checks the daemon without opening a new browser

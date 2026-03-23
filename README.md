@@ -16,18 +16,21 @@ ytmusic-skill/
 ├── SKILL.md
 ├── scripts/
 │   ├── helper.py
-│   ├── launch_chrome.py
-│   └── player.py
+│   ├── player.py
+│   └── player_daemon.py
 ├── references/
 │   └── commands.md
 └── .ytmusic/
-    └── auth.json
+    ├── auth.json
+    ├── player-daemon.json
+    ├── player-daemon.log
+    └── playwright-profile/
 ```
 
 By default:
 - `scripts/helper.py` stores API auth headers in `./.ytmusic/auth.json`
-- `scripts/player.py` does not use local browser state files; it connects to an existing Chrome session via CDP
-- `scripts/launch_chrome.py` starts a dedicated Chrome profile for CDP playback control
+- `scripts/player.py` is a thin client that auto-starts or reuses a persistent playback daemon
+- `scripts/player_daemon.py` holds the long-lived Playwright browser and its dedicated profile
 
 If needed, you can override the runtime data directory with `YTMUSIC_DATA_DIR`.
 
@@ -62,27 +65,18 @@ uv run --with ytmusicapi python scripts/helper.py auth check
 
 ## Playback Modes
 
-`scripts/player.py` only supports Chrome CDP playback.
-`open`, `play`, `pause`, `next`, `prev`, `seek`, `volume`, and `status` all require the same active Chrome debugging session.
-
-Start Chrome with the helper launcher:
-
-```bash
-uv run python scripts/launch_chrome.py
-```
-
-On macOS, prefer this helper over `open -a 'Google Chrome' --args ...`.
-It uses a dedicated `--user-data-dir`, which is more reliable for remote debugging. Because that is a separate Chrome profile, you may need to sign in again inside the launched window.
-On Chrome 136 and later, this dedicated profile is required because Chrome no longer allows `--remote-debugging-port` against the default Chrome data directory.
+`scripts/player.py` talks to a persistent Playwright daemon.
+Regular playback commands auto-start a dedicated browser window on first use and then reuse the same browser session.
 
 Examples:
 
 ```bash
-uv run python scripts/launch_chrome.py --chrome-port 9223
-uv run python scripts/launch_chrome.py --user-data-dir ~/.ytmusic-chrome-profile
+uv run --with playwright python scripts/player.py daemon-start
 uv run --with playwright python scripts/player.py open <videoId>
 uv run --with playwright python scripts/player.py status
-uv run --with playwright python scripts/player.py --chrome-port 9222 next
+uv run --with playwright python scripts/player.py next
+uv run --with playwright python scripts/player.py daemon-status
+uv run --with playwright python scripts/player.py daemon-stop
 ```
 
 ## Notes
@@ -90,10 +84,9 @@ uv run --with playwright python scripts/player.py --chrome-port 9222 next
 - `uv` is required
 - `ytmusicapi` is pulled on demand via `uv run --with ytmusicapi ...`
 - `playwright` is pulled on demand via `uv run --with playwright ...`
-- Playback depends on a real Chrome session with remote debugging enabled
-- If `open <videoId>` loads a track but does not start audio, autoplay was likely blocked and the user may need to click play once in the launched Chrome window
-- `status` also depends on the active CDP Chrome session; it does not work without the debugging port
-- Reusing your existing normal Chrome profile is not supported on Chrome 136+
+- The first playback command opens a dedicated browser profile under `./.ytmusic/playwright-profile`
+- If `open <videoId>` loads a track but does not start audio, autoplay was likely blocked and the user may need to click play once in the daemon-managed browser window
+- `daemon-status` reports whether the background browser daemon is alive without launching a new browser
 
 ## ClawHub Notes
 
