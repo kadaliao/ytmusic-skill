@@ -2,11 +2,6 @@
 
 A lightweight `SKILL.md` skill for controlling YouTube Music via natural language.
 
-This repo is prepared for ClawHub submission:
-- `SKILL.md` includes `version` and `metadata.openclaw`
-- runtime state is ignored via `.gitignore`
-- the skill is fully text-based and ships no generated runtime data
-
 ## Install
 
 Any agent that supports `SKILL.md`-style skills can install this folder directly.
