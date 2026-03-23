@@ -120,35 +120,29 @@ user <channelId>
 Run player commands as:
 
 ```bash
-uv run --with playwright python scripts/player.py [--mode isolated|chrome] [--chrome-port N] <action> [args]
+uv run --with playwright python scripts/player.py [--chrome-port N] <action> [args]
 ```
 
-### isolated mode
+The player only works through Chrome remote debugging.
 
-Uses the skill-local runtime directory `./.ytmusic/`.
-
-```bash
-uv run --with playwright python scripts/player.py open <videoId>
-uv run --with playwright python scripts/player.py play
-uv run --with playwright python scripts/player.py pause
-uv run --with playwright python scripts/player.py toggle
-uv run --with playwright python scripts/player.py next
-uv run --with playwright python scripts/player.py prev
-uv run --with playwright python scripts/player.py volume <0-100>
-uv run --with playwright python scripts/player.py seek <seconds>
-uv run --with playwright python scripts/player.py status
-uv run --with playwright python scripts/player.py shuffle
-uv run --with playwright python scripts/player.py repeat
-```
-
-### chrome mode
-
-Uses the user's own Chrome session via remote debugging.
+Start Chrome first:
 
 ```bash
 open -a 'Google Chrome' --args --remote-debugging-port=9222
+```
 
-uv run --with playwright python scripts/player.py --mode chrome status
-uv run --with playwright python scripts/player.py --mode chrome open <videoId>
-uv run --with playwright python scripts/player.py --mode chrome --chrome-port 9222 next
+Then control the existing signed-in Chrome session:
+
+```bash
+uv run --with playwright python scripts/player.py status
+uv run --with playwright python scripts/player.py open <videoId>
+uv run --with playwright python scripts/player.py next
+uv run --with playwright python scripts/player.py prev
+uv run --with playwright python scripts/player.py play
+uv run --with playwright python scripts/player.py pause
+uv run --with playwright python scripts/player.py volume <0-100>
+uv run --with playwright python scripts/player.py seek <seconds>
+uv run --with playwright python scripts/player.py shuffle
+uv run --with playwright python scripts/player.py repeat
+uv run --with playwright python scripts/player.py --chrome-port 9222 status
 ```

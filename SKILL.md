@@ -20,6 +20,7 @@ Run bundled scripts from the skill root:
 - `scripts/helper.py`: search, library, playlists, lyrics, ratings, account
 - `scripts/player.py`: play, pause, next, prev, volume, seek, status
 - Runtime state is local to `./.ytmusic/`
+- Playback requires an already running Chrome session with remote debugging enabled
 
 ## Workflow
 
@@ -127,9 +128,11 @@ Full command reference: `references/commands.md`
 
 ## Playback
 
-Default to `isolated`. Use `--mode chrome` only when the user wants to reuse their existing Chrome session.
+Playback only works through Chrome CDP. The user must already have Chrome open with remote debugging enabled and be signed in at `music.youtube.com`.
 
 ```bash
+open -a 'Google Chrome' --args --remote-debugging-port=9222
+
 uv run --with playwright python scripts/player.py open <videoId>
 uv run --with playwright python scripts/player.py play
 uv run --with playwright python scripts/player.py pause
@@ -138,10 +141,13 @@ uv run --with playwright python scripts/player.py prev
 uv run --with playwright python scripts/player.py status
 uv run --with playwright python scripts/player.py volume <0-100>
 uv run --with playwright python scripts/player.py seek <seconds>
-uv run --with playwright python scripts/player.py --mode chrome status
+uv run --with playwright python scripts/player.py --chrome-port 9222 status
 ```
 
-If isolated mode has no `./.ytmusic/auth.json`, stop and use the auth flow above before retrying.
+If playback commands fail, first verify:
+- Chrome is already running with `--remote-debugging-port=9222`
+- The user is signed in at `music.youtube.com`
+- The requested song page can actually play in that Chrome session
 
 ## Output
 

@@ -20,15 +20,12 @@ ytmusic-skill/
 ├── references/
 │   └── commands.md
 └── .ytmusic/
-    ├── auth.json
-    ├── browser_cookies.json
-    └── browser-profile/
+    └── auth.json
 ```
 
 By default:
 - `scripts/helper.py` stores API auth headers in `./.ytmusic/auth.json`
-- `scripts/helper.py` stores browser cookies in `./.ytmusic/browser_cookies.json`
-- `scripts/player.py` uses `./.ytmusic/browser_cookies.json` and `./.ytmusic/browser-profile/`
+- `scripts/player.py` does not use local browser state files; it connects to an existing Chrome session via CDP
 
 If needed, you can override the runtime data directory with `YTMUSIC_DATA_DIR`.
 
@@ -63,17 +60,20 @@ uv run --with ytmusicapi python scripts/helper.py auth check
 
 ## Playback Modes
 
-`scripts/player.py` supports:
-- `isolated`: self-managed Chromium, uses local skill state
-- `chrome`: attaches to an existing Chrome session via CDP
+`scripts/player.py` only supports Chrome CDP playback.
+
+Start Chrome with remote debugging enabled and make sure you are already signed in to YouTube Music:
+
+```bash
+open -a 'Google Chrome' --args --remote-debugging-port=9222
+```
 
 Examples:
 
 ```bash
 uv run --with playwright python scripts/player.py open <videoId>
-uv run --with playwright python scripts/player.py --mode chrome status
-uv run --with playwright python scripts/player.py --mode chrome --chrome-port 9222 next
-uv run --with playwright python scripts/player.py --hold-open-seconds 0 open <videoId>
+uv run --with playwright python scripts/player.py status
+uv run --with playwright python scripts/player.py --chrome-port 9222 next
 ```
 
 ## Notes
@@ -81,7 +81,7 @@ uv run --with playwright python scripts/player.py --hold-open-seconds 0 open <vi
 - `uv` is required
 - `ytmusicapi` is pulled on demand via `uv run --with ytmusicapi ...`
 - `playwright` is pulled on demand via `uv run --with playwright ...`
-- Chromium is downloaded on first isolated playback run
+- Playback depends on a real Chrome session with remote debugging enabled
 
 ## ClawHub Notes
 
